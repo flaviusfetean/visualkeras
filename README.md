@@ -128,8 +128,10 @@ _Note: Scaled models may hide the true complexity of a layer, but are visually m
 
 ###### Layered visualization of non-sequential models
 
+Here is a sample of a miniature GoogLeNet model with a legend.
+
 ![Layered view of a miniature GoogLeNet with legend](figures/mini_googlenet_layered_legend.png)
-_Note: This feature was more of a small update that was not really tested so it might not work perfectly
+_Note: This feature was more of a small update that was not really tested so it might not work perfectly._
 
 ## FAQ
 
