@@ -1,5 +1,6 @@
 import aggdraw
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
+import numpy as np
 from math import ceil
 from .utils import *
 from .layer_utils import *
@@ -12,12 +13,11 @@ class _DummyLayer:
             self.units = units
         self.name = name
 
-
 def graph_view(model, to_file: str = None,
                color_map: dict = None, node_size: int = 50,
-               background_fill: Any = 'white', padding: int = 10,
+               background_fill: Any = 'white', padding: int = 10, font: ImageFont = None,
                layer_spacing: int = 250, node_spacing: int = 10, connector_fill: Any = 'gray',
-               connector_width: int = 1, ellipsize_after: int = 10,
+               connector_width: int = 1, ellipsize_after: int = 10, legend: bool = False,
                inout_as_tensor: bool = True, show_neurons: bool = True) -> Image:
     """
     Generates a architecture visualization for a given linear keras model (i.e. one input and output tensor for each
@@ -41,12 +41,17 @@ def graph_view(model, to_file: str = None,
     flattened and one node for each scalar will be created (e.g. a (10, 10) shape will be represented by 100 nodes)
     :param show_neurons: If True a node for each neuron in supported layers is created (constrained by ellipsize_after),
     else each layer is represented by a node
+    :param: legend: If True, the final image will also contain a legend with layer types/names and their corresponding
+    color in the graph
 
     :return: Generated architecture image.
     """
 
     if color_map is None:
         color_map = dict()
+
+    color_scheme = ColorScheme(color_map)
+    color_scheme.decode_color_map()
 
     # Iterate over the model to compute bounds and generate boxes
 
@@ -108,8 +113,8 @@ def graph_view(model, to_file: str = None,
 
                 current_y = c.y2 + node_spacing
 
-                c.fill = color_map.get(type(layer), {}).get('fill', 'orange')
-                c.outline = color_map.get(type(layer), {}).get('outline', 'black')
+                c.fill, c.outline = color_scheme.get_color_scheme(layer)
+
 
                 layer_nodes.append(c)
 
@@ -120,6 +125,7 @@ def graph_view(model, to_file: str = None,
         layer_y.append(current_y - node_spacing - 2 * node_size)
         layers.append(nodes)
         current_x += node_size + layer_spacing
+
 
     # Generate image
 
@@ -154,6 +160,68 @@ def graph_view(model, to_file: str = None,
             node.draw(draw)
 
     draw.flush()
+
+    ####################### Added by me: Legend ##########################
+    ######################################################################
+
+    if legend:
+        if font is None:
+            font = ImageFont.load_default()
+
+        layer_types = color_scheme.keys
+        num_types = len(layer_types)
+
+        patches = list()
+
+        legend_height, fontsize = size_search(img_width, color_scheme)
+        cube_size = legend_height
+
+        font = ImageFont.truetype("arial.ttf", size=fontsize)
+
+        de = 0
+
+        spacing = font.getsize("M")[1]
+
+        for layer_type in layer_types:
+            if not isinstance(layer_type, str):
+                label = layer_type.__name__
+            else:
+                label = layer_type
+
+            text_size = font.getsize(label)
+            label_patch_size = (cube_size + spacing + text_size[0], cube_size)
+            # this only works if cube_size is bigger than text height
+
+            img_box = Image.new('RGBA', label_patch_size, background_fill)
+            img_text = Image.new('RGBA', label_patch_size, (0, 0, 0, 0))
+            draw_box = aggdraw.Draw(img_box)
+            draw_text = ImageDraw.Draw(img_text)
+
+            box = Box()
+            box.x1 = 0
+            box.x2 = box.x1 + cube_size
+            box.y1 = de
+            box.y2 = box.y1 + cube_size
+            box.de = de
+            box.shade = 10
+            box.fill = color_scheme.color_map.get(layer_type, {}).get('fill', "#000000")
+            box.outline = color_scheme.color_map.get(layer_type, {}).get('outline', "#000000")
+            box.draw(draw_box)
+
+            text_x = box.x2 + box.de
+            text_y = (label_patch_size[1] - text_size[1]) / 2  # 2D center; use text_height and not the current label!
+            draw_text.text((text_x, text_y), label, font=font, fill='black')
+
+            draw_box.flush()
+            img_box.paste(img_text, mask=img_text)
+            patches.append(img_box)
+
+        legend_image = linear_layout(patches, max_width=img.width, max_height=img.height, padding=padding,
+                                     spacing=10,
+                                     background_fill=background_fill, horizontal=True)
+        img = vertical_image_concat(img, legend_image, background_fill=background_fill)
+
+    ######################### End addition by me #########################
 
     if to_file is not None:
         img.save(to_file)

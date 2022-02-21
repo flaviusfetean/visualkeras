@@ -2,6 +2,7 @@ from PIL import ImageFont
 from math import ceil
 from .utils import *
 from .layer_utils import *
+from .graph import _DummyLayer
 
 
 def layered_view(model, to_file: str = None, min_z: int = 20, min_xy: int = 20, max_z: int = 400,
@@ -62,142 +63,63 @@ def layered_view(model, to_file: str = None, min_z: int = 20, min_xy: int = 20, 
     if color_map is None:
         color_map = dict()
 
-    for index, layer in enumerate(model.layers):
+    color_scheme = ColorScheme(color_map)
+    color_scheme.decode_color_map()
 
-        # Ignore layers that the use has opted out to
-        if type(layer) in type_ignore or index in index_ignore:
-            continue
+    id_to_num_mapping, adj_matrix = model_to_adj_matrix(model)
+    model_layers = model_to_hierarchy_lists(model, id_to_num_mapping, adj_matrix)
 
-        # Do no render the SpacingDummyLayer, just increase the pointer
-        if type(layer) == SpacingDummyLayer:
-            current_z += layer.spacing
-            continue
+    model_layout = ComplexVolume(id_to_num_mapping, adj_matrix, model_layers)
 
-        layer_type = type(layer)
+    layer_types = model_layout.compute_layers_3d_sizes(layer_types, type_ignore, one_dim_orientation,
+                                         min_xy, min_z, scale_xy, scale_z, max_xy, max_z)
 
-        if layer_type not in layer_types:
-            layer_types.append(layer_type)
+    # add fake output layers
+    model_layers.append([_DummyLayer(model.output_names[i], None if True else self_multiply(model.output_shape[i])) for i in range(len(model.outputs))])
+    id_to_num_mapping, adj_matrix = augment_output_layers(model, model_layers[-1], id_to_num_mapping, adj_matrix)
 
-        x = min_xy
-        y = min_xy
-        z = min_z
+    boxes, img_height, img_width = model_layout.compute_boxes_coordinates(spacing, padding, shade_step, draw_volume,
+                                                                          color_scheme, color_wheel)
 
-        if isinstance(layer.output_shape, tuple):
-            shape = layer.output_shape
-        elif isinstance(layer.output_shape, list) and len(
-                layer.output_shape) == 1:  # drop dimension for non seq. models
-            shape = layer.output_shape[0]
-        else:
-            raise RuntimeError(f"not supported tensor shape {layer.output_shape}")
-
-        shape = shape[1:]  # drop batch size
-
-        if len(shape) == 1:
-            if one_dim_orientation in ['x', 'y', 'z']:
-                shape = (1, ) * "xyz".index(one_dim_orientation) + shape
-            else:
-                raise ValueError(f"unsupported orientation: {one_dim_orientation}")
-
-        shape = shape + (1, ) * (4 - len(shape))  # expand 4D.
-
-        x = min(max(shape[0] * scale_xy, x), max_xy)
-        y = min(max(shape[1] * scale_xy, y), max_xy)
-        z = min(max(self_multiply(shape[2:]) * scale_z, z), max_z)
-
-        box = Box()
-
-        box.de = 0
-        if draw_volume:
-            box.de = x / 3
-
-        if x_off == -1:
-            x_off = box.de / 2
-
-        # top left coordinate
-        box.x1 = current_z - box.de / 2
-        box.y1 = box.de
-
-        # bottom right coordinate
-        box.x2 = box.x1 + z
-        box.y2 = box.y1 + y
-
-        box.fill = color_map.get(layer_type, {}).get('fill', color_wheel.get_color(layer_type))
-        box.outline = color_map.get(layer_type, {}).get('outline', 'black')
-        color_map[layer_type] = {'fill': box.fill, 'outline': box.outline}
-
-        box.shade = shade_step
-        boxes.append(box)
-        layer_y.append(box.y2 - (box.y1 - box.de))
-
-        # Update image bounds
-        hh = box.y2 - (box.y1 - box.de)
-        if hh > img_height:
-            img_height = hh
-
-        if box.x2 + box.de > max_right:
-            max_right = box.x2 + box.de
-
-        current_z += z + spacing
 
     # Generate image
-    img_width = max_right + x_off + padding
     img = Image.new('RGBA', (int(ceil(img_width)), int(ceil(img_height))), background_fill)
     draw = aggdraw.Draw(img)
 
-    # x, y correction (centering)
-    for i, node in enumerate(boxes):
-        y_off = (img.height - layer_y[i]) / 2
-        node.y1 += y_off
-        node.y2 += y_off
-
-        node.x1 += x_off
-        node.x2 += x_off
 
     # Draw created boxes
 
-    last_box = None
 
-    for box in boxes:
+    model_layout.draw_boxes_and_funnels(boxes, draw, draw_funnel)
 
-        pen = aggdraw.Pen(get_rgba_tuple(box.outline))
-
-        if last_box is not None and draw_funnel:
-            draw.line([last_box.x2 + last_box.de, last_box.y1 - last_box.de,
-                       box.x1 + box.de, box.y1 - box.de], pen)
-
-            draw.line([last_box.x2 + last_box.de, last_box.y2 - last_box.de,
-                       box.x1 + box.de, box.y2 - box.de], pen)
-
-            draw.line([last_box.x2, last_box.y2,
-                       box.x1, box.y2], pen)
-
-            draw.line([last_box.x2, last_box.y1,
-                       box.x1, box.y1], pen)
-
-        box.draw(draw)
-
-        last_box = box
-
-    draw.flush()
 
     # Create layer color legend
     if legend:
         if font is None:
             font = ImageFont.load_default()
 
-        text_height = font.getsize("Ag")[1]
-        cube_size = text_height
-
-        de = 0
-        if draw_volume:
-            de = cube_size // 2
+        layer_types = color_scheme.keys
+        num_types = len(layer_types)
 
         patches = list()
 
+        legend_height, fontsize = size_search(img_width, color_scheme)
+        cube_size = legend_height
+
+        font = ImageFont.truetype("arial.ttf", size=fontsize)
+
+        de = cube_size // 3
+
+        spacing = font.getsize("M")[1]
+
         for layer_type in layer_types:
-            label = layer_type.__name__
+            if not isinstance(layer_type, str):
+                label = layer_type.__name__
+            else:
+                label = layer_type
+
             text_size = font.getsize(label)
-            label_patch_size = (cube_size + de + spacing + text_size[0], cube_size + de)
+            label_patch_size = (cube_size + spacing + text_size[0], cube_size + de)
             # this only works if cube_size is bigger than text height
 
             img_box = Image.new('RGBA', label_patch_size, background_fill)
@@ -211,22 +133,24 @@ def layered_view(model, to_file: str = None, min_z: int = 20, min_xy: int = 20, 
             box.y1 = de
             box.y2 = box.y1 + cube_size
             box.de = de
-            box.shade = shade_step
-            box.fill = color_map.get(layer_type, {}).get('fill', "#000000")
-            box.outline = color_map.get(layer_type, {}).get('outline', "#000000")
+            box.shade = 10
+            box.fill = color_scheme.color_map.get(layer_type, {}).get('fill', "#000000")
+            box.outline = color_scheme.color_map.get(layer_type, {}).get('outline', "#000000")
             box.draw(draw_box)
 
-            text_x = box.x2 + box.de + spacing
-            text_y = (label_patch_size[1] - text_height) / 2  # 2D center; use text_height and not the current label!
-            draw_text.text((text_x, text_y), label, font=font, fill=font_color)
+            text_x = box.x2 + box.de
+            text_y = (label_patch_size[1] - text_size[1]) / 2  # 2D center; use text_height and not the current label!
+            draw_text.text((text_x, text_y), label, font=font, fill='black')
 
             draw_box.flush()
             img_box.paste(img_text, mask=img_text)
             patches.append(img_box)
 
-        legend_image = linear_layout(patches, max_width=img.width, max_height=img.height, padding=padding, spacing=spacing,
+        legend_image = linear_layout(patches, max_width=img.width, max_height=img.height, padding=padding,
+                                     spacing=10,
                                      background_fill=background_fill, horizontal=True)
         img = vertical_image_concat(img, legend_image, background_fill=background_fill)
+
 
     if to_file is not None:
         img.save(to_file)

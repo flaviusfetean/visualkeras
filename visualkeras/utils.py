@@ -1,5 +1,7 @@
 from typing import Any
-from PIL import ImageColor, ImageDraw, Image
+from PIL import ImageColor, ImageDraw, Image, ImageFont
+from collections import defaultdict
+import numpy as np
 import aggdraw
 
 
@@ -207,3 +209,77 @@ def linear_layout(images: list, max_width: int = -1, max_height: int = -1, horiz
         layout.paste(img, coord)
 
     return layout
+
+############################## Here is the code that I, Flavius, have added ##################################
+#
+#
+##############################################################################################################
+
+class ColorScheme():
+    def __init__(self, color_map):
+        self.color_map = color_map
+        self.keys = []
+        self.keys_names = []
+
+    def decode_color_map(self):
+        self.keys = self.color_map.keys()
+
+        for key in self.keys:
+            if isinstance(key, str):
+                self.keys_names.append(key)
+
+    def get_color_scheme(self, layer):
+
+        referenced_key = ''
+
+        if len(self.keys_names) and (layer.name is not None): # means we also have names included in the keys
+                                     #and our layer has a name so it s worth searching
+            name = layer.name
+            for key_name in self.keys_names:
+                if name.find(key_name) >= 0:
+                    referenced_key = key_name
+                    break
+
+        final_key = referenced_key if referenced_key != '' else type(layer)
+
+        fill= self.color_map.get(final_key, {}).get('fill', 'orange')
+        outline = self.color_map.get(final_key, {}).get('outline', 'black')
+
+        return fill, outline
+
+def get_legend_total_width(font, num_types, types_names):
+    legend_height = font.getsize("M")[1]
+    tot_width = legend_height * num_types
+    txt_lens = [font.getsize(txt)[0] for txt in types_names]
+    txt_len = np.sum(txt_lens, axis=0)
+
+    return tot_width + txt_len
+
+def size_search(img_width, color_scheme):
+    layer_types = color_scheme.keys
+    num_types = len(layer_types)
+    types_names = [layer_type if isinstance(layer_type, str) else layer_type.__name__ for layer_type in layer_types]
+
+    fontsize = 0
+    legend_width = 0
+    img_width_dummy = img_width * 0.25
+
+    # this 2 whiles are for a binary search in the fontsize space (we don t have a font height or width, but only a
+    # kind of parameter, "scale", but it s very abstract, and we can check the font's height, so we perform a binary
+    # search for the height
+    while legend_width < img_width * 0.25:
+        chgsize = 1
+        font = ImageFont.truetype("arial.ttf", size=chgsize)
+        legend_width = get_legend_total_width(font, num_types, types_names)
+
+        while legend_width < img_width_dummy:
+            chgsize *= 2
+            font = ImageFont.truetype("arial.ttf", size=chgsize)
+            legend_width = get_legend_total_width(font, num_types, types_names)
+
+        font = ImageFont.truetype("arial.ttf", size=chgsize - 1)
+        fontsize += chgsize - 1
+        img_width_dummy -= get_legend_total_width(font, num_types, types_names)
+
+    legend_height = font.getsize("M")[1]
+    return legend_height, fontsize
